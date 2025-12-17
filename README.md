@@ -1,4 +1,4 @@
-# FAD-Net: A Frequency-domain Amplitude-Phase Decoupling Network for Semantic Segmentation of Optical and Elevation Remote Sensing Imagery.
+# FAD-Net: Frequency-domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation
 
 This repository contains the official implementation of **FAD-Net** (Frequency-domain Amplitude-Phase Decoupling Network). FAD-Net is designed for the semantic segmentation of multi-modal remote sensing images (Optical + Elevation).
 
