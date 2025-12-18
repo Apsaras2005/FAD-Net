@@ -1,11 +1,5 @@
 # FAD-Net: Frequency-domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation
 
-This repository contains the official implementation of **FAD-Net** (Frequency-domain Amplitude-Phase Decoupling Network). FAD-Net is designed for the semantic segmentation of multi-modal remote sensing images (Optical + Elevation).
-
-It introduces two key components:
-1.  **MM-Mona Module:** Addresses heterogeneous feature misalignment by decoupling amplitude and phase in the frequency domain.
-2.  **APRP Decoder:** A decoder that resolves mutual interference between deep semantics and shallow details using phase-geometric constraints.
-
 ## 🛠️ Environment Setup
 
 To run this project, you need a Python environment with PyTorch installed. It is recommended to use **Python 3.8+** and **PyTorch 2.10+**.
