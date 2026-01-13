@@ -1,4 +1,4 @@
-# FAD-Net: Frequency-domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation
+# FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation
 
 ## 🛠️ Environment Setup
 
