@@ -311,7 +311,7 @@ def setup_validation_preprocessing():
 
 
 def create_validation_dataset(config):
-    print("\n--- Starting generation of fixed validation dataset ---")
+    print("\n--- Starting generation of fixed validation dataset (Sliding Window) ---")
     data_config = config['ACTIVE_DATASET']
     val_file_paths = get_file_paths(config, data_config['TEST_AREAS'], purpose='val')
 
@@ -319,25 +319,11 @@ def create_validation_dataset(config):
 
     palette_map = _create_palette_map(data_config, config['MODEL']['NUM_CLASSES'], config['DATA']['IGNORE_INDEX'])
     ignore_index = config['DATA']['IGNORE_INDEX']
-    val_crop_count = config['DATA']['VAL_CROP_COUNT']
     img_size = config['DATA']['IMG_SIZE']
     val_samples = []
 
-    pbar_val = tqdm(range(val_crop_count), desc="Generating validation samples")
-    generated_count = 0
-    while generated_count < val_crop_count:
+    for path_dict in tqdm(val_file_paths, desc="Processing Validation Areas"):
         try:
-            path_dict = random.choice(val_file_paths)
-
-            with tifffile.TiffFile(path_dict['top']) as tif:
-                img_shape = tif.pages[0].shape
-
-            h, w = img_shape[0], img_shape[1]
-            if h < img_size or w < img_size:
-                continue
-
-            x, y = random.randint(0, w - img_size), random.randint(0, h - img_size)
-
             top_img_raw = tifffile.imread(path_dict['top'])
             dsm_img_raw = tifffile.imread(path_dict['dsm'])
             gt_img_raw = tifffile.imread(path_dict['gt'])
@@ -345,31 +331,48 @@ def create_validation_dataset(config):
             top_img_rgb = replicate_pil_convert_rgb(top_img_raw)
             gt_img_rgb = replicate_pil_convert_rgb(gt_img_raw)
 
-            top_crop = top_img_rgb[y:y + img_size, x:x + img_size]
-            dsm_crop = dsm_img_raw[y:y + img_size, x:x + img_size]
-            gt_crop_rgb = gt_img_rgb[y:y + img_size, x:x + img_size]
+            h, w = top_img_rgb.shape[:2]
 
-            dsm_crop = np.expand_dims(dsm_crop, axis=-1)
-            gt_crop_labels = _convert_gt_to_labels(gt_crop_rgb, palette_map, ignore_index)
-            gt_labels_expanded = np.expand_dims(gt_crop_labels, axis=-1)
+            if h < img_size or w < img_size:
+                print(f"Warning: Image {path_dict['top']} is smaller than crop size ({img_size}). Skipping.")
+                continue
 
-            transformed = val_transforms(image=top_crop, dsm=dsm_crop, masks=[gt_labels_expanded])
+            y_steps = list(range(0, h - img_size + 1, img_size))
+            if y_steps[-1] != h - img_size:
+                y_steps.append(h - img_size)
 
-            top_tensor = transformed['image']
-            dsm_tensor = transformed['dsm']
-            gt_tensor = transformed['masks'][0]
+            x_steps = list(range(0, w - img_size + 1, img_size))
+            if x_steps[-1] != w - img_size:
+                x_steps.append(w - img_size)
 
-            dsm_tensor = dsm_tensor.float() / 255.0
-            gt_tensor = gt_tensor.squeeze(0).long()
+            for y in y_steps:
+                for x in x_steps:
+                    top_crop = top_img_rgb[y:y + img_size, x:x + img_size]
+                    dsm_crop = dsm_img_raw[y:y + img_size, x:x + img_size]
+                    gt_crop_rgb = gt_img_rgb[y:y + img_size, x:x + img_size]
 
-            val_samples.append((top_tensor, dsm_tensor, gt_tensor))
-            generated_count += 1
-            pbar_val.update(1)
-        except Exception:
+                    if dsm_crop.ndim == 2:
+                        dsm_crop = np.expand_dims(dsm_crop, axis=-1)
+
+                    gt_crop_labels = _convert_gt_to_labels(gt_crop_rgb, palette_map, ignore_index)
+                    gt_labels_expanded = np.expand_dims(gt_crop_labels, axis=-1)
+
+                    transformed = val_transforms(image=top_crop, dsm=dsm_crop, masks=[gt_labels_expanded])
+
+                    top_tensor = transformed['image']
+                    dsm_tensor = transformed['dsm']
+                    gt_tensor = transformed['masks'][0]
+
+                    dsm_tensor = dsm_tensor.float() / 255.0
+                    gt_tensor = gt_tensor.squeeze(0).long()
+
+                    val_samples.append((top_tensor, dsm_tensor, gt_tensor))
+
+        except Exception as e:
+            print(f"Error processing file {path_dict['top']}: {e}")
             continue
 
-    pbar_val.close()
-    print(f"✅ Successfully generated {len(val_samples)} validation samples.")
+    print(f"✅ Successfully generated {len(val_samples)} sliding-window validation samples.")
     return InMemoryDataset(val_samples)
 
 
