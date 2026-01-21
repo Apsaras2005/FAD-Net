@@ -60,13 +60,13 @@ def get_config(dataset_name='potsdam'):
             'IMG_SIZE': 256,
             'NUM_WORKERS': 8,
             'MULTI_SCALE_TRAIN_CROP': {
-                'total_count': 2000,
+                'total_count': 8000,
                 'scales': [
                     {'size': 1024, 'proportion': 0.2}, {'size': 512, 'proportion': 0.2},
                     {'size': 256, 'proportion': 0.4}, {'size': 128, 'proportion': 0.2},
                 ]
             },
-            'VAL_CROP_COUNT': 2000,
+            'VAL_CROP_COUNT': 16000,
             'IGNORE_INDEX': 255
         },
         'AUGMENTATION': {
@@ -118,4 +118,5 @@ def get_config(dataset_name='potsdam'):
             }
         }
     }
+
     return CONFIG
