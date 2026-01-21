@@ -66,7 +66,6 @@ def get_config(dataset_name='potsdam'):
                     {'size': 256, 'proportion': 0.4}, {'size': 128, 'proportion': 0.2},
                 ]
             },
-            'VAL_CROP_COUNT': 16000,
             'IGNORE_INDEX': 255
         },
         'AUGMENTATION': {
@@ -120,3 +119,4 @@ def get_config(dataset_name='potsdam'):
     }
 
     return CONFIG
+
