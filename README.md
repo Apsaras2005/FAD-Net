@@ -1,5 +1,10 @@
 # FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation
 
+[![Paper](https://img.shields.io/badge/Paper-IEEE%20TGRS-blue.svg)](https://ieeexplore.ieee.org/document/11482238)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.10+-red.svg)](https://pytorch.org/)
+
+**Official PyTorch implementation of the TGRS paper "FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation"**
+
 ## 🛠️ Environment Setup
 
 To run this project, you need a Python environment with PyTorch installed. It is recommended to use **Python 3.8+** and **PyTorch 2.10+**.
@@ -102,3 +107,21 @@ python train.py --dataset potsdam
 python train.py --dataset vaihingen
 
 ```
+---
+
+## 📝 Citation
+
+If you find this project useful for your research, please consider citing our paper:
+
+```bibtex
+@ARTICLE{11482238,
+  author={Li, Zicong and Li, Xiaotong and Zhu, Hao and Li, Weibin and Hou, Biao},
+  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
+  title={FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation}, 
+  year={2026},
+  volume={},
+  number={},
+  pages={1-1},
+  keywords={Feeds;Apertures;Antennas;Filtering;Filters;Circuits and systems;Gabor filters;Circuits;LoRa;High frequency;Semantic segmentation;multi-modal remote sensing;frequency-domain analysis;feature fusion},
+  doi={10.1109/TGRS.2026.3684237}
+}
