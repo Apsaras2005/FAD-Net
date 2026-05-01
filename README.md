@@ -5,6 +5,21 @@
 
 **Official PyTorch implementation of the TGRS paper "FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation"**
 
+---
+
+## 📢 Important Note: Optimized Implementation (Codebase vs. Paper)
+
+To ensure maximum efficiency and training stability, the **Frequency-Guided Dynamic Weight Module (FGDWM)** in this official repository has been upgraded from the heuristic clustering-based version described in the TGRS paper to a **Data-Driven, End-to-End Routing Mechanism**.
+
+**Key Enhancements in this Release:**
+* 🚀 **End-to-End Differentiable:** By tapping spectral energy (mean absolute amplitude) directly from Gabor filters and processing it via Log-compression and LayerNorm, the weights are now learned autonomously through backpropagation.
+* ⚡ **Significant Performance Boost:** We replaced high-dimensional distance matrix calculations (`torch.cdist`) and iterative loops with an efficient MLP, drastically reducing VRAM consumption and increasing training/inference FPS.
+* 🧠 **Consistent Philosophy:** The core scientific intuition remains identical to the paper—leveraging frequency-domain energy distribution to dynamically route multi-scale spatial receptive fields.
+
+**Note:** This version is the official stable release. The original clustering-based code was primarily for theoretical validation and is no longer maintained in this repository due to its heavy computational overhead.
+
+---
+
 ## 🛠️ Environment Setup
 
 To run this project, you need a Python environment with PyTorch installed. It is recommended to use **Python 3.8+** and **PyTorch 2.10+**.
