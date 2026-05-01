@@ -8,102 +8,23 @@ import numpy as np
 import math
 import random
 
-class DynamicSpectrumClustering:
-    def __init__(self, num_prototypes=3, elastic_damping=0.5):
-        self.K = num_prototypes
-        self.damping = elastic_damping
-        self.cached_geometry = {}
 
-    def run(self, magnitude_map):
-        H, W = magnitude_map.shape
-        device = magnitude_map.device
+class FGDWM(nn.Module):
+    def __init__(self, k):
+        super().__init__()
+        self.k = k
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(k),
+            nn.Linear(k, k * 2),
+            nn.GELU(),
+            nn.Linear(k * 2, 3)
+        )
 
-        geom_key = (H, W, str(device))
-        if geom_key in self.cached_geometry:
-            grid_y, grid_x, norm_radius_map, radius_map = self.cached_geometry[geom_key]
-        else:
-            y = torch.arange(H, device=device) - H // 2
-            x = torch.arange(W, device=device) - W // 2
-            grid_y, grid_x = torch.meshgrid(y, x, indexing='ij')
-
-            grid_y = grid_y.contiguous()
-            grid_x = grid_x.contiguous()
-
-            radius_map = torch.sqrt(grid_y ** 2 + grid_x ** 2)
-            max_r = math.sqrt((H // 2) ** 2 + (W // 2) ** 2)
-            norm_radius_map = radius_map / (max_r + 1e-6)
-
-            self.cached_geometry[geom_key] = (grid_y, grid_x, norm_radius_map, radius_map)
-
-        log_mag = torch.log(1 + magnitude_map)
-        pre_emphasis = 1.0 + 15.0 * norm_radius_map
-        geometry_correction = 1.0 / (torch.sqrt(radius_map) + 1.0)
-
-        clustering_weight = log_mag * pre_emphasis * geometry_correction
-
-        center_h, center_w = H // 2, W // 2
-        clustering_weight[center_h, center_w] = 0 
-
-        min_dim = min(H, W)
-        dynamic_mask_r = int(min_dim * 0.02)
-        if dynamic_mask_r >= 1:
-            clustering_weight[center_h - dynamic_mask_r: center_h + dynamic_mask_r + 1,
-            center_w - dynamic_mask_r: center_w + dynamic_mask_r + 1] = 0
-
-        weights_flat = clustering_weight.reshape(-1)
-        coords_flat = torch.stack([grid_y.reshape(-1), grid_x.reshape(-1)], dim=1).float()
-
-        top_k = int(weights_flat.shape[0] * 0.3)
-        top_k = max(top_k, self.K + 1)  
-        _, top_indices = torch.topk(weights_flat, top_k)
-
-        active_weights = weights_flat[top_indices]
-        active_coords = coords_flat[top_indices]
-
-        max_r_px = H // 2
-        anchor_ratios = [0.20, 0.50, 0.80]
-        anchor_radii = torch.tensor([r * max_r_px for r in anchor_ratios], device=device)
-
-        prototypes = []
-        for r_target in anchor_radii:
-            angle = torch.rand((), device=device) * 2 * math.pi
-            cy = r_target * torch.sin(angle)
-            cx = r_target * torch.cos(angle)
-            prototypes.append(torch.stack([cy, cx]))
-        centroids = torch.stack(prototypes)
-
-        num_iters = 3
-        with torch.no_grad():
-            for _ in range(num_iters):
-                dists = torch.cdist(active_coords, centroids)
-                labels = torch.argmin(dists, dim=1)
-
-                data_centroids = []
-                for k in range(self.K):
-                    mask = (labels == k)
-                    if mask.sum() == 0:
-                        data_centroids.append(centroids[k])
-                        continue
-
-                    c_coords = active_coords[mask]
-                    c_weights = active_weights[mask]
-                    weighted_sum = (c_coords * c_weights.unsqueeze(1)).sum(dim=0)
-                    total_weight = c_weights.sum()
-                    data_centroids.append(weighted_sum / (total_weight + 1e-6))
-
-                data_centroids = torch.stack(data_centroids)
-
-                current_radii = torch.norm(data_centroids, dim=1) + 1e-6
-                directions = data_centroids / current_radii.unsqueeze(1)
-                target_positions = directions * anchor_radii.unsqueeze(1)
-
-                centroids = (1 - self.damping) * data_centroids + self.damping * target_positions
-
-        centroid_dists = torch.norm(centroids, dim=1)
-        sorted_indices = torch.argsort(centroid_dists)
-        sorted_centroids = centroids[sorted_indices]
-
-        return sorted_centroids
+    def forward(self, energy_E):
+        e_log = torch.log(1.0 + energy_E)
+        logits = self.mlp(e_log)
+        weights = F.softmax(logits, dim=1)
+        return weights
 
 
 class LoRALinear(nn.Module):
@@ -185,7 +106,6 @@ class Mona(nn.Module):
 
 
 class MonaCrossAttention(nn.Module):
-
     def __init__(self, dim, num_heads):
         super().__init__()
         self.norm_q = nn.LayerNorm(dim)
@@ -200,12 +120,11 @@ class MonaCrossAttention(nn.Module):
 
 
 class MM_Mona(nn.Module):
-    def __init__(self, in_dim, proj_dim=64, num_filters_k=4, num_prototypes=3):
+    def __init__(self, in_dim, proj_dim=64, num_filters_k=4):
         super().__init__()
         self.in_dim = in_dim
         self.proj_dim = proj_dim
         self.k = num_filters_k
-        self.num_prototypes = num_prototypes
         self.project1 = nn.Linear(in_dim, self.proj_dim)
         self.project2 = nn.Linear(self.proj_dim, in_dim)
         self.nonlinear = F.gelu
@@ -228,7 +147,7 @@ class MM_Mona(nn.Module):
         init_params[:, 3].normal_(mean=-0.5, std=1.0)
         self.gabor_params = nn.Parameter(init_params)
 
-        self.cluster_algo = DynamicSpectrumClustering(num_prototypes=self.num_prototypes, elastic_damping=0.5)
+        self.fgdwm = FGDWM(k=self.k)
 
         self.dw_conv_3x3 = nn.Conv2d(self.proj_dim, self.proj_dim, kernel_size=3, padding=1, groups=self.proj_dim)
         self.dw_conv_5x5 = nn.Conv2d(self.proj_dim, self.proj_dim, kernel_size=5, padding=2, groups=self.proj_dim)
@@ -289,13 +208,25 @@ class MM_Mona(nn.Module):
 
         return filters
 
-    def _compute_adaptive_fusion(self, x_proj_map, spec_input, magnitude_mean, gabor_filters, h, w):
+    def _compute_adaptive_fusion(self, x_proj_map, spec_input, gabor_filters, h, w):
         b, c, _, _ = x_proj_map.shape
-        device = x_proj_map.device
-
-        prototypes = self.cluster_algo.run(magnitude_mean.detach() + 1e-6)
 
         filtered_spectra = spec_input.unsqueeze(1) * gabor_filters
+        abs_spectra = torch.abs(filtered_spectra)
+
+        energy_E = abs_spectra.mean(dim=(2, 3, 4))
+
+        dynamic_weights = self.fgdwm(energy_E)
+
+        w_high = dynamic_weights[:, 0].view(b, 1, 1, 1)
+        w_mid = dynamic_weights[:, 1].view(b, 1, 1, 1)
+        w_low = dynamic_weights[:, 2].view(b, 1, 1, 1)
+
+        out_3 = self.dw_conv_3x3(x_proj_map)
+        out_5 = self.dw_conv_5x5(x_proj_map)
+        out_7 = self.dw_conv_7x7(x_proj_map)
+        spatial_out = w_high * out_3 + w_mid * out_5 + w_low * out_7
+
         B_f, K_f, C_f, H_f, W_f = filtered_spectra.shape
         reshaped_spectra = filtered_spectra.view(B_f * K_f, C_f, H_f, W_f)
 
@@ -303,36 +234,6 @@ class MM_Mona(nn.Module):
         texture_responses = torch.real(texture_map_complex).view(B_f, K_f, C_f, H_f, W_f)
 
         freq_out = torch.mean(texture_responses, dim=1)
-
-        energy_E = torch.sum(torch.square(texture_responses), dim=(2, 3, 4))  # [B, K]
-
-        center_freq_val = torch.sigmoid(self.gabor_params[:, 0]) * 0.5
-        compensation_factor = torch.sqrt(center_freq_val + 0.1).to(device)
-        balanced_energy = energy_E * compensation_factor.view(1, self.k)
-
-        r_px = center_freq_val * h
-        angles = torch.sigmoid(self.gabor_params[:, 2]) * torch.pi
-        f_y = r_px * torch.sin(angles)
-        f_x = r_px * torch.cos(angles)
-        filter_centers = torch.stack([f_y, f_x], dim=1).to(device)
-
-        dist_F_P = torch.cdist(filter_centers, prototypes)
-        temperature = 20.0
-        membership_M = F.softmax(-dist_F_P / temperature, dim=1)
-
-        e_group = torch.sum(balanced_energy.unsqueeze(2) * membership_M.unsqueeze(0), dim=1)
-        total_energy = e_group.sum(dim=1, keepdim=True)
-        dynamic_weights = (e_group / (total_energy + 1e-6)).detach()
-
-        w_low = dynamic_weights[:, 0].view(b, 1, 1, 1)
-        w_mid = dynamic_weights[:, 1].view(b, 1, 1, 1)
-        w_high = dynamic_weights[:, 2].view(b, 1, 1, 1)
-
-        out_3 = self.dw_conv_3x3(x_proj_map)
-        out_5 = self.dw_conv_5x5(x_proj_map)
-        out_7 = self.dw_conv_7x7(x_proj_map)
-
-        spatial_out = w_high * out_3 + w_mid * out_5 + w_low * out_7
 
         return spatial_out, freq_out
 
@@ -350,7 +251,6 @@ class MM_Mona(nn.Module):
             x_proj_map = x_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2)
 
             spec_x = torch.fft.fftshift(torch.fft.fft2(x_proj_map, norm='ortho'))
-            mag_x = torch.abs(spec_x).mean(dim=(0, 1))
 
             if is_cross_path and x_other_fp32 is not None:
                 x_other_norm = self.norm(x_other_fp32) * self.gamma + x_other_fp32 * self.gammax
@@ -358,7 +258,6 @@ class MM_Mona(nn.Module):
                 x_other_proj_map = x_other_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2)
 
                 spec_y = torch.fft.fftshift(torch.fft.fft2(x_other_proj_map, norm='ortho'))
-                mag_y = torch.abs(spec_y).mean(dim=(0, 1))
 
                 amp_x, phase_x = torch.abs(spec_x), torch.angle(spec_x)
                 amp_y, phase_y = torch.abs(spec_y), torch.angle(spec_y)
@@ -371,17 +270,16 @@ class MM_Mona(nn.Module):
             else:
                 spec_fused = spec_x
                 x_other_proj_map = None
-                mag_y = None
 
             gabor_filters = self._generate_log_gabor_filters(h, w, x_fp32.device)
 
             spatial_out, freq_out = self._compute_adaptive_fusion(
-                x_proj_map, spec_fused, mag_x, gabor_filters, h, w
+                x_proj_map, spec_fused, gabor_filters, h, w
             )
 
             if is_cross_path and x_other_fp32 is not None:
                 spatial_out_other, freq_out_other = self._compute_adaptive_fusion(
-                    x_other_proj_map, spec_y, mag_y, gabor_filters, h, w
+                    x_other_proj_map, spec_y, gabor_filters, h, w
                 )
 
                 q_s = spatial_out.flatten(2).transpose(1, 2)
@@ -389,9 +287,7 @@ class MM_Mona(nn.Module):
                 q_f = freq_out.flatten(2).transpose(1, 2)
                 kv_f = freq_out_other.flatten(2).transpose(1, 2)
 
-                spatial_enhanced = spatial_out + self.cross_attn_spatial(q_s, kv_s).transpose(1, 2).view(b,
-                                                                                                         self.proj_dim,
-                                                                                                    h, w)
+                spatial_enhanced = spatial_out + self.cross_attn_spatial(q_s, kv_s).transpose(1, 2).view(b, self.proj_dim, h, w)
                 freq_enhanced = freq_out + self.cross_attn_freq(q_f, kv_f).transpose(1, 2).view(b, self.proj_dim, h, w)
             else:
                 spatial_enhanced = spatial_out
@@ -548,8 +444,6 @@ class WindowAttention(nn.Module):
     def extra_repr(self) -> str:
         return f'dim={self.dim}, window_size={self.window_size}, ' \
                f'pretrained_window_size={self.pretrained_window_size}, num_heads={self.num_heads}'
-
-
 
 
 class SwinTransformerBlock(nn.Module):
