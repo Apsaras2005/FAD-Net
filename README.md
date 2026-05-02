@@ -7,7 +7,7 @@
 
 ---
 
-## 📢 Important Note: Optimized Implementation (Codebase vs. Paper)
+## 📢 Optimized Implementation
 
 To ensure maximum efficiency and training stability, the **Frequency-Guided Dynamic Weight Module (FGDWM)** in this official repository has been upgraded from the heuristic clustering-based version described in the TGRS paper to a **Data-Driven, End-to-End Routing Mechanism**.
 
@@ -16,7 +16,7 @@ To ensure maximum efficiency and training stability, the **Frequency-Guided Dyna
 * ⚡ **Significant Performance Boost:** We replaced high-dimensional distance matrix calculations (`torch.cdist`) and iterative loops with an efficient MLP, drastically reducing VRAM consumption and increasing training/inference FPS.
 * 🧠 **Consistent Philosophy:** The core scientific intuition remains identical to the paper—leveraging frequency-domain energy distribution to dynamically route multi-scale spatial receptive fields.
 
-**Note:** This version is the official stable release. The original clustering-based code was primarily for theoretical validation and is no longer maintained in this repository due to its heavy computational overhead.
+**Note:** This version is the stable release. The original clustering-based code was primarily for theoretical validation and is no longer maintained in this repository due to its heavy computational overhead.
 
 ---
 
