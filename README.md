@@ -134,9 +134,9 @@ If you find this project useful for your research, please consider citing our pa
   journal={IEEE Transactions on Geoscience and Remote Sensing}, 
   title={FAD-Net: Frequency-Domain Amplitude-Phase Decoupling Network for Optical-Elevation Remote Sensing Segmentation}, 
   year={2026},
-  volume={},
+  volume={64},
   number={},
-  pages={1-1},
-  keywords={Feeds;Apertures;Antennas;Filtering;Filters;Circuits and systems;Gabor filters;Circuits;LoRa;High frequency;Semantic segmentation;multi-modal remote sensing;frequency-domain analysis;feature fusion},
-  doi={10.1109/TGRS.2026.3684237}
-}
+  pages={1-13},
+  keywords={Feeds;Apertures;Antennas;Filtering;Filters;Circuits and systems;Gabor filters;Circuits;LoRa;High frequency;Feature fusion;frequency-domain analysis;multimodal remote sensing;semantic segmentation},
+  doi={10.1109/TGRS.2026.3684237}}
+
