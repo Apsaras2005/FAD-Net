@@ -9,14 +9,20 @@
 
 ## 📢 Optimized Implementation
 
-To ensure maximum efficiency and training stability, the **Frequency-Guided Dynamic Weight Module (FGDWM)** in this official repository has been upgraded from the heuristic clustering-based version described in the TGRS paper to a **Data-Driven, End-to-End Routing Mechanism**.
+To ensure maximum efficiency and training stability, this repository incorporates both architectural and computational pipeline optimizations over the original implementation.
 
-**Key Enhancements in this Release:**
-* 🚀 **End-to-End Differentiable:** By tapping spectral energy (mean absolute amplitude) directly from Gabor filters and processing it via Log-compression and LayerNorm, the weights are now learned autonomously through backpropagation.
-* ⚡ **Significant Performance Boost:** We replaced high-dimensional distance matrix calculations (`torch.cdist`) and iterative loops with an efficient MLP, drastically reducing VRAM consumption and increasing training/inference FPS.
-* 🧠 **Consistent Philosophy:** The core scientific intuition remains identical to the paper—leveraging frequency-domain energy distribution to dynamically route multi-scale spatial receptive fields.
+### 1. Data-Driven Dynamic Routing (FGDWM)
+- **End-to-End Differentiable:** Spectral energy (mean absolute amplitude) is extracted directly from Gabor filters and processed via Log-compression, LayerNorm, and a compact MLP, allowing routing weights to update via backpropagation.
+- **Overhead Reduction:** Replaced iterative clustering loops and pairwise distance computations (`torch.cdist`) with an end-to-end projection layer, reducing peak memory usage and latency.
 
-**Note:** This version is the stable release. The original clustering-based code was primarily for theoretical validation and is no longer maintained in this repository due to its heavy computational overhead.
+### 2. High-Efficiency Frequency-Domain Computation
+- **RFFT Real-Transform Formulation:** Replaced two-dimensional complex FFTs (`fft2`/`ifft2`) in the Decoder with conjugate-symmetric real FFTs (`rfft2`/`irfft2`), reducing spectral feature map memory footprint by approximately 50%.
+- **Linearity-Driven IFFT Reduction:** Leveraged the linearity property of the Fourier transform in `MM_Mona`. The $K$ individual inverse transforms are merged into a single `ifft2` call applied to the weighted composite spectrum.
+- **Elimination of Coordinate Shifts:** Pre-shifted Log-Gabor filter frequencies to operate directly on unshifted spectral representations, removing runtime `fftshift` and `ifftshift` data movement overhead.
+
+### 3. Tensor Caching & Kernel Acceleration
+- **Native SDPA Integration:** Switched window attention to `torch.nn.functional.scaled_dot_product_attention`, executing via FlashAttention or Memory-Efficient kernels based on hardware availability. Cross-attention layers set `need_weights=False` to eliminate attention matrix retention.
+- **Reference Points & Coordinate Caching:** Static geometric coordinate grids, trigonometric tables, deformable attention reference points, and spatial shape tensors are computed once and stored in memory caches to eliminate repetitive host-device kernel invocations.
 
 ---
 
