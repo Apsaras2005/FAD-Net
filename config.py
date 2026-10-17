@@ -33,7 +33,7 @@ _POTSDAM_CONFIG_BASE = {
     'CLASS_WEIGHTS_CE': [1.0, 0.7, 1.4, 1.2, 1.7, 1.3],
     'TRAIN_AREAS': [
         '2_10', '2_11', '2_12', '3_10', '3_11', '3_12', '4_10', '4_11', '4_12', '5_10', '5_11', '5_12',
-        '6_7', '6_8', '6_9', '6_10', '6_11', '6_12', '7_7', '7_8', '7_9', '7_10', '7_11', '7_12'
+        '6_07', '6_08', '6_09', '6_10', '6_11', '6_12', '7_07', '7_08', '7_09', '7_10', '7_11', '7_12'
     ],
     'TEST_AREAS': [
         '2_13', '2_14', '3_13', '3_14', '4_13', '4_14', '4_15', '5_13', '5_14', '5_15', '6_13', '6_14', '6_15', '7_13'
@@ -60,12 +60,13 @@ def get_config(dataset_name='potsdam'):
             'IMG_SIZE': 256,
             'NUM_WORKERS': 8,
             'MULTI_SCALE_TRAIN_CROP': {
-                'total_count': 2000,
+                'total_count': 1600,
                 'scales': [
                     {'size': 1024, 'proportion': 0.2}, {'size': 512, 'proportion': 0.2},
                     {'size': 256, 'proportion': 0.4}, {'size': 128, 'proportion': 0.2},
                 ]
             },
+            'VAL_CROP_COUNT': 3200,
             'IGNORE_INDEX': 255
         },
         'AUGMENTATION': {
@@ -73,10 +74,10 @@ def get_config(dataset_name='potsdam'):
             'contrast': 0.25, 'saturation': 0.2, 'hue': 0.1
         },
         'TRAIN': {
-            'EPOCHS': 100, 'BATCH_SIZE': 4, 'GRAD_ACCUMULATION_STEPS': 2,
+            'EPOCHS': 100, 'BATCH_SIZE': 8, 'GRAD_ACCUMULATION_STEPS': 2,
             'OPTIMIZER': {'lr': 1.5e-4, 'weight_decay': 0.1},
             'LR_SCHEDULER': {'warmup_epochs': 10, 'min_lr_ratio': 1e-6},
-            'EARLY_STOPPING': {'patience': 20, 'metric': 'mIoU'},
+            'EARLY_STOPPING': {'patience': 30, 'metric': 'mIoU'},
             'PRETRAINED_WEIGHTS_PATH': 'pretrained_weights/swinv2_base_patch4_window12_192_22k.pth',
             'GRAD_CLIP_MAX_NORM': 0.5,
             'LOSS': {
@@ -92,7 +93,7 @@ def get_config(dataset_name='potsdam'):
                 'EMBED_DIM': 128, 'DEPTHS': [2, 2, 18, 2], 'NUM_HEADS': [4, 8, 16, 32],
                 'WINDOW_SIZE': 16, 'PRETRAINED_WINDOW_SIZES': [12, 12, 12, 6], 'MLP_RATIO': 4.0,
                 'QKV_BIAS': True, 'DROP_RATE': 0.0, 'ATTN_DROP_RATE': 0.0, 'APE': False,
-                'PATCH_NORM': True, 'USE_CHECKPOINT': False,
+                'PATCH_NORM': True, 'USE_CHECKPOINT': False,  
                 'LORA': {'rank': 0, 'alpha': 0},
             },
             'INTERACTION': {
@@ -103,7 +104,7 @@ def get_config(dataset_name='potsdam'):
                     [False, True]
                 ],
                 'CROSS_ATTN_NUM_HEADS': 8,
-                'MONA_COMPLEX_GABOR_FILTERS': 24,
+                'MONA_COMPLEX_GABOR_FILTERS': 24, 
             },
             'ADAPTER': {
                 'CONV_INPLANE': 64, 'N_POINTS': 4,
@@ -117,6 +118,4 @@ def get_config(dataset_name='potsdam'):
             }
         }
     }
-
     return CONFIG
-
