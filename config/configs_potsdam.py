@@ -94,7 +94,7 @@ def get_config(dataset_name='potsdam'):
                 'WINDOW_SIZE': 16, 'PRETRAINED_WINDOW_SIZES': [12, 12, 12, 6], 'MLP_RATIO': 4.0,
                 'QKV_BIAS': True, 'DROP_RATE': 0.0, 'ATTN_DROP_RATE': 0.0, 'APE': False,
                 'PATCH_NORM': True, 'USE_CHECKPOINT': False,  
-                'LORA': {'rank': 0, 'alpha': 0},
+                'LORA': {'rank': 16, 'alpha': 32},
             },
             'INTERACTION': {
                 'CROSS_ATTN_IN_MONA_BLOCKS': [
