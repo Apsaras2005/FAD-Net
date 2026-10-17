@@ -126,33 +126,27 @@ class UPerNetHead(nn.Module):
             for i in range(len(self.in_channels) - 2, -1, -1):
                 l_shallow = laterals[i]
                 p_deep = p_feats[0]
+                target_h, target_w = l_shallow.shape[2:]
 
                 p_deep_up = F.interpolate(
                     p_deep,
-                    size=l_shallow.shape[2:],
+                    size=(target_h, target_w),
                     mode='bilinear',
                     align_corners=self.align_corners
                 )
 
-                freq_l = torch.fft.fft2(l_shallow, norm='ortho')
-                freq_l_shifted = torch.fft.fftshift(freq_l, dim=(-2, -1))
-                amp_l = torch.abs(freq_l_shifted)
+                freq_l = torch.fft.rfft2(l_shallow, norm='ortho')
+                amp_l = torch.abs(freq_l)
 
-                freq_p = torch.fft.fft2(p_deep_up, norm='ortho')
-                freq_p_shifted = torch.fft.fftshift(freq_p, dim=(-2, -1))
-                phase_p = torch.angle(freq_p_shifted)
+                freq_p = torch.fft.rfft2(p_deep_up, norm='ortho')
+                phase_p = torch.angle(freq_p)
 
-                new_freq_shifted = torch.polar(amp_l, phase_p)
-                new_freq = torch.fft.ifftshift(new_freq_shifted, dim=(-2, -1))
-                details = torch.fft.ifft2(new_freq, norm='ortho')
+                new_freq = torch.polar(amp_l, phase_p)
+                details_real = torch.fft.irfft2(new_freq, s=(target_h, target_w), norm='ortho')
 
-                details_real = torch.real(details)
                 details_processed = self.details_processors[i](details_real)
-
                 fused_feature_sum = details_processed + p_deep_up + l_shallow
-
                 p_current = self.fusion_refiners[i](fused_feature_sum)
-
                 p_feats.insert(0, p_current)
 
             p_1_size = p_feats[0].shape[2:]
@@ -168,4 +162,4 @@ class UPerNetHead(nn.Module):
             output = self.fpn_bottleneck(fpn_outs)
             output = self.cls_seg(output)
 
-            return output
+            return output 
