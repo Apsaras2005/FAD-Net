@@ -1,7 +1,14 @@
 import os
+# Restrict thread contention between underlying math libraries and OpenCV to prevent excessive CPU thread overhead
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["ALBUMENTATIONS_DISABLE_UPDATE_CHECK"] = "1"
 os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
 os.environ['ALBUMENTATIONS_SUPPRESS_CHECK'] = '1'
+
 import sys
 import random
 import argparse
@@ -18,8 +25,12 @@ from albumentations.pytorch import ToTensorV2
 import cv2
 import torch.nn.functional as F
 
-from config import get_config
-from model import DualSwinV2MonaUperNet
+# Disable OpenCV internal multithreading to avoid conflicts with DataLoader multiprocessing
+cv2.setNumThreads(0)
+
+from config.configs_vaihingen import get_config
+from FAD_Net_2_Flash import DualSwinV2MonaUperNet
+
 
 class Tee:
     def __init__(self, filename, mode='w', encoding='utf-8'):
@@ -43,27 +54,18 @@ def setup_logging(log_dir='logs'):
     os.makedirs(log_dir, exist_ok=True)
     log_filename = os.path.join(log_dir, f"train_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     sys.stdout = Tee(log_filename)
-    print(f"Log will be output to: {log_filename}")
+    print(f"Logging output to: {log_filename}")
 
 
 def clear_checkpoints_directory(dir_path='model_weights'):
     if not os.path.exists(dir_path):
         return
-
     files_to_delete = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
-
-    if not files_to_delete:
-        return
-
-    for file_name in files_to_delete:
-        print(f"- {file_name}")
-
     for file_name in files_to_delete:
         try:
-            file_path = os.path.join(dir_path, file_name)
-            os.remove(file_path)
-        except OSError as e:
-            print(f"Error deleting file {file_name}: {e}")
+            os.remove(os.path.join(dir_path, file_name))
+        except OSError:
+            pass
 
 
 def replicate_pil_convert_rgb(image_array: np.ndarray) -> np.ndarray:
@@ -94,37 +96,28 @@ class MetricsCalculator:
 
         if labels_masked.size > 0:
             preds_masked[preds_masked >= self.num_total_classes] = self.num_total_classes - 1
-
             cm = np.bincount(
                 self.num_total_classes * labels_masked.astype(np.int64) + preds_masked.astype(np.int64),
                 minlength=self.num_total_classes ** 2
             ).reshape(self.num_total_classes, self.num_total_classes)
-
             self.confusion_matrix += cm
 
     def compute(self, class_names):
-        if len(class_names) != self.num_eval_classes:
-            print(
-                f"Warning: The number of provided class_names ({len(class_names)}) does not match num_eval_classes ({self.num_eval_classes}).")
-
         if self.confusion_matrix.sum() == 0:
             oa = 0
+            iou_all_classes = np.zeros(self.num_total_classes)
+            accuracy_all_classes = np.zeros(self.num_total_classes)
+            f1_score_all_classes = np.zeros(self.num_total_classes)
         else:
             full_tp_sum = np.diag(self.confusion_matrix).sum()
             full_pixel_sum = self.confusion_matrix.sum()
             oa = full_tp_sum / full_pixel_sum if full_pixel_sum > 0 else 0
 
-        if self.confusion_matrix.sum() == 0:
-            iou_all_classes = np.zeros(self.num_total_classes)
-            accuracy_all_classes = np.zeros(self.num_total_classes)
-            f1_score_all_classes = np.zeros(self.num_total_classes)
-        else:
             tp = np.diag(self.confusion_matrix)
             fp = self.confusion_matrix.sum(axis=0) - tp
             fn = self.confusion_matrix.sum(axis=1) - tp
 
             with np.errstate(divide='ignore', invalid='ignore'):
-
                 iou_all_classes = tp / (tp + fp + fn)
                 accuracy_all_classes = tp / self.confusion_matrix.sum(axis=1)
                 precision = tp / (tp + fp)
@@ -137,12 +130,12 @@ class MetricsCalculator:
 
         iou_eval_classes = iou_all_classes[:self.num_eval_classes]
         f1_eval_classes = f1_score_all_classes[:self.num_eval_classes]
-
         miou = np.nanmean(iou_eval_classes)
         mf1 = np.nanmean(f1_eval_classes)
 
         header = f"{'Class':<25} | {'IoU':>6} | {'Accuracy':>10} | {'F1-Score':>10}"
         separator = "-" * len(header)
+
         result_str_list = [
             f"Overall Accuracy (OA): {oa:.4f}",
             f"Mean IoU (mIoU):       {miou:.4f}",
@@ -155,11 +148,9 @@ class MetricsCalculator:
                 f"{name:<25} | {iou_all_classes[i]:>6.4f} | {accuracy_all_classes[i]:>10.4f} | {f1_score_all_classes[i]:>10.4f}")
 
         result_str_list.append(separator)
-
         metrics_dict = {'OA': oa, 'mIoU': miou, 'mF1': mf1,
                         'per_class_iou': iou_eval_classes,
                         'per_class_f1': f1_eval_classes}
-
         return "\n".join(result_str_list), metrics_dict
 
 
@@ -170,7 +161,6 @@ def get_file_paths(config, areas_list, purpose='train'):
     gt_template_key = 'gt'
     if purpose == 'val' and 'gt_val' in templates:
         gt_template_key = 'gt_val'
-        print("INFO: Using 'gt_val' template for the validation set.")
     for area in areas_list:
         top_path = os.path.join(base_dir, templates['top'].format(area))
         dsm_path = os.path.join(base_dir, templates['dsm'].format(area))
@@ -178,8 +168,7 @@ def get_file_paths(config, areas_list, purpose='train'):
         if os.path.exists(top_path) and os.path.exists(dsm_path) and os.path.exists(gt_path):
             file_paths.append({'top': top_path, 'dsm': dsm_path, 'gt': gt_path})
     if not file_paths:
-        raise RuntimeError(f"No image files found. Please check the area list and data path in config: {base_dir}")
-    print(f"Found {len(file_paths)} large image areas for the {'training' if purpose == 'train' else 'validation'} set.")
+        raise RuntimeError(f"No image files found at path: {base_dir}")
     return file_paths
 
 
@@ -227,7 +216,6 @@ class DynamicTrainDataset(Dataset):
         self.config = config
         self.data_config = config['ACTIVE_DATASET']
         self.crop_config = config['DATA']['MULTI_SCALE_TRAIN_CROP']
-        self.file_paths = get_file_paths(config, self.data_config['TRAIN_AREAS'], purpose='train')
         self.augmentations = setup_data_preprocessing(config, is_train=True)
         self.palette_map = _create_palette_map(self.data_config, config['MODEL']['NUM_CLASSES'],
                                                config['DATA']['IGNORE_INDEX'])
@@ -240,51 +228,56 @@ class DynamicTrainDataset(Dataset):
         except ValueError:
             self.car_class_index = -1
 
+        print("Preloading training data into RAM, please wait...")
+        raw_file_paths = get_file_paths(config, self.data_config['TRAIN_AREAS'], purpose='train')
+        self.cached_data = []
+        for path_dict in tqdm(raw_file_paths, desc="Loading TIFs to RAM"):
+            top_img = replicate_pil_convert_rgb(tifffile.imread(path_dict['top']))
+            dsm_img = tifffile.imread(path_dict['dsm'])
+            gt_img = replicate_pil_convert_rgb(tifffile.imread(path_dict['gt']))
+            gt_labels = _convert_gt_to_labels(gt_img, self.palette_map, self.ignore_index)
+            self.cached_data.append({
+                'top': top_img,
+                'dsm': dsm_img,
+                'gt': gt_labels
+            })
+        print(f"Data preloading complete, {len(self.cached_data)} regions loaded.")
+
     def __len__(self):
         return self.total_count
 
     def __getitem__(self, idx):
+        spin_count = 0
         while True:
+            spin_count += 1
             try:
-                path_dict = random.choice(self.file_paths)
+                data_item = random.choice(self.cached_data)
                 scale_config = random.choices(self.scales, weights=[s['proportion'] for s in self.scales], k=1)[0]
                 size = scale_config['size']
-
-                top_img_raw = tifffile.imread(path_dict['top'])
-                img_shape = top_img_raw.shape
-                h, w = img_shape[0], img_shape[1]
+                h, w = data_item['top'].shape[0], data_item['top'].shape[1]
 
                 if h < size or w < size:
                     continue
 
                 x, y = random.randint(0, w - size), random.randint(0, h - size)
 
-                dsm_img_raw = tifffile.imread(path_dict['dsm'])
-                gt_img_raw = tifffile.imread(path_dict['gt'])
-
-                top_img_rgb = replicate_pil_convert_rgb(top_img_raw)
-                gt_img_rgb = replicate_pil_convert_rgb(gt_img_raw)
-
-                top_crop = top_img_rgb[y:y + size, x:x + size]
-                dsm_crop = dsm_img_raw[y:y + size, x:x + size]
-                gt_crop_rgb = gt_img_rgb[y:y + size, x:x + size]
+                top_crop = data_item['top'][y:y + size, x:x + size]
+                dsm_crop = data_item['dsm'][y:y + size, x:x + size]
+                gt_crop_labels = data_item['gt'][y:y + size, x:x + size]
 
                 dsm_crop = np.expand_dims(dsm_crop, axis=-1)
-                gt_crop_labels = _convert_gt_to_labels(gt_crop_rgb, self.palette_map, self.ignore_index)
 
-                if self.car_class_index != -1 and self.car_class_index not in gt_crop_labels:
+                # Infinite loop guard: proceed if no cars found after 30 retries to prevent CPU spinlock
+                if spin_count <= 30 and self.car_class_index != -1 and self.car_class_index not in gt_crop_labels:
                     if random.random() < 0.5:
                         continue
 
                 gt_labels_expanded = np.expand_dims(gt_crop_labels, axis=-1)
-
                 transformed = self.augmentations(image=top_crop, dsm=dsm_crop, masks=[gt_labels_expanded])
-                top_tensor = transformed['image']
-                dsm_tensor = transformed['dsm']
-                gt_tensor = transformed['masks'][0]
 
-                dsm_tensor = dsm_tensor.float() / 255.0
-                gt_tensor = gt_tensor.squeeze(0).long()
+                top_tensor = transformed['image']
+                dsm_tensor = transformed['dsm'].float() / 255.0
+                gt_tensor = transformed['masks'][0].squeeze(0).long()
 
                 return top_tensor, dsm_tensor, gt_tensor
 
@@ -311,81 +304,60 @@ def setup_validation_preprocessing():
 
 
 def create_validation_dataset(config):
-    print("\n--- Starting generation of fixed validation dataset (Sliding Window) ---")
+    import gc
+    print("\n--- Generating fixed validation dataset ---")
     data_config = config['ACTIVE_DATASET']
     val_file_paths = get_file_paths(config, data_config['TEST_AREAS'], purpose='val')
-
     val_transforms = setup_validation_preprocessing()
-
     palette_map = _create_palette_map(data_config, config['MODEL']['NUM_CLASSES'], config['DATA']['IGNORE_INDEX'])
     ignore_index = config['DATA']['IGNORE_INDEX']
+    val_crop_count = config['DATA']['VAL_CROP_COUNT']
     img_size = config['DATA']['IMG_SIZE']
+
+    temp_val_cache = []
+    for path_dict in val_file_paths:
+        top_img = replicate_pil_convert_rgb(tifffile.imread(path_dict['top']))
+        dsm_img = tifffile.imread(path_dict['dsm'])
+        gt_img = replicate_pil_convert_rgb(tifffile.imread(path_dict['gt']))
+        gt_labels = _convert_gt_to_labels(gt_img, palette_map, ignore_index)
+        temp_val_cache.append({'top': top_img, 'dsm': dsm_img, 'gt': gt_labels})
+
     val_samples = []
+    pbar_val = tqdm(range(val_crop_count), desc="Generating validation samples")
 
-    for path_dict in tqdm(val_file_paths, desc="Processing Validation Areas"):
-        try:
-            top_img_raw = tifffile.imread(path_dict['top'])
-            dsm_img_raw = tifffile.imread(path_dict['dsm'])
-            gt_img_raw = tifffile.imread(path_dict['gt'])
-
-            top_img_rgb = replicate_pil_convert_rgb(top_img_raw)
-            gt_img_rgb = replicate_pil_convert_rgb(gt_img_raw)
-
-            h, w = top_img_rgb.shape[:2]
-
-            if h < img_size or w < img_size:
-                print(f"Warning: Image {path_dict['top']} is smaller than crop size ({img_size}). Skipping.")
-                continue
-
-            y_steps = list(range(0, h - img_size + 1, img_size))
-            if y_steps[-1] != h - img_size:
-                y_steps.append(h - img_size)
-
-            x_steps = list(range(0, w - img_size + 1, img_size))
-            if x_steps[-1] != w - img_size:
-                x_steps.append(w - img_size)
-
-            for y in y_steps:
-                for x in x_steps:
-                    top_crop = top_img_rgb[y:y + img_size, x:x + img_size]
-                    dsm_crop = dsm_img_raw[y:y + img_size, x:x + img_size]
-                    gt_crop_rgb = gt_img_rgb[y:y + img_size, x:x + img_size]
-
-                    if dsm_crop.ndim == 2:
-                        dsm_crop = np.expand_dims(dsm_crop, axis=-1)
-
-                    gt_crop_labels = _convert_gt_to_labels(gt_crop_rgb, palette_map, ignore_index)
-                    gt_labels_expanded = np.expand_dims(gt_crop_labels, axis=-1)
-
-                    transformed = val_transforms(image=top_crop, dsm=dsm_crop, masks=[gt_labels_expanded])
-
-                    top_tensor = transformed['image']
-                    dsm_tensor = transformed['dsm']
-                    gt_tensor = transformed['masks'][0]
-
-                    dsm_tensor = dsm_tensor.float() / 255.0
-                    gt_tensor = gt_tensor.squeeze(0).long()
-
-                    val_samples.append((top_tensor, dsm_tensor, gt_tensor))
-
-        except Exception as e:
-            print(f"Error processing file {path_dict['top']}: {e}")
+    while len(val_samples) < val_crop_count:
+        data_item = random.choice(temp_val_cache)
+        h, w = data_item['top'].shape[:2]
+        if h < img_size or w < img_size:
             continue
+        x, y = random.randint(0, w - img_size), random.randint(0, h - img_size)
 
-    print(f"✅ Successfully generated {len(val_samples)} sliding-window validation samples.")
+        top_crop = data_item['top'][y:y + img_size, x:x + img_size]
+        dsm_crop = np.expand_dims(data_item['dsm'][y:y + img_size, x:x + img_size], axis=-1)
+        gt_crop_labels = np.expand_dims(data_item['gt'][y:y + img_size, x:x + img_size], axis=-1)
+
+        transformed = val_transforms(image=top_crop, dsm=dsm_crop, masks=[gt_crop_labels])
+        top_tensor = transformed['image']
+        dsm_tensor = transformed['dsm'].float() / 255.0
+        gt_tensor = transformed['masks'][0].squeeze(0).long()
+
+        val_samples.append((top_tensor, dsm_tensor, gt_tensor))
+        pbar_val.update(1)
+
+    pbar_val.close()
+    del temp_val_cache
+    gc.collect()
     return InMemoryDataset(val_samples)
 
 
 def load_pretrained_weights(model, weights_path):
     if not os.path.exists(weights_path):
-        print(f"⚠️ Pretrained weights not found: '{weights_path}'. Starting training from scratch.")
+        print(f"⚠️ Pretrained weights not found: '{weights_path}'. Training from scratch.")
         return model
 
-    print(f"Loading pretrained weights: '{weights_path}'...")
     checkpoint = torch.load(weights_path, map_location='cpu')
     pretrained_dict = checkpoint.get('model', checkpoint)
     model_dict = model.state_dict()
-
     weights_to_load = {}
 
     for k_pre, v_pre in pretrained_dict.items():
@@ -394,8 +366,7 @@ def load_pretrained_weights(model, weights_path):
 
         k_x_base, k_y_base = None, None
         if k_pre.startswith('patch_embed.'):
-            k_x_base, k_y_base = k_pre.replace('patch_embed.', 'patch_embed_x.'), k_pre.replace('patch_embed.',
-                                                                                                'patch_embed_y.')
+            k_x_base, k_y_base = k_pre.replace('patch_embed.', 'patch_embed_x.'), k_pre.replace('patch_embed.', 'patch_embed_y.')
         elif k_pre.startswith('layers.'):
             k_x_base, k_y_base = k_pre.replace('layers.', 'layers_x.'), k_pre.replace('layers.', 'layers_y.')
 
@@ -405,34 +376,21 @@ def load_pretrained_weights(model, weights_path):
 
             lora_keywords = ['attn.qkv.weight', 'attn.proj.weight', 'attn.proj.bias',
                              'mlp.fc1.weight', 'mlp.fc1.bias', 'mlp.fc2.weight', 'mlp.fc2.bias']
-
-            is_lora_wrapped_and_loaded = False
-
+            is_lora = False
             for keyword in lora_keywords:
                 if k_target_base.endswith(keyword):
-
-                    k_target_lora = k_target_base.replace(
-                        keyword.split('.')[-1],
-                        f'original_layer.{keyword.split(".")[-1]}'
-                    )
-
+                    k_target_lora = k_target_base.replace(keyword.split('.')[-1], f'original_layer.{keyword.split(".")[-1]}')
                     if k_target_lora in model_dict and v_pre.shape == model_dict[k_target_lora].shape:
                         weights_to_load[k_target_lora] = v_pre
-                        is_lora_wrapped_and_loaded = True
+                        is_lora = True
                         break
-
-            if not is_lora_wrapped_and_loaded:
+            if not is_lora:
                 if k_target_base in model_dict and v_pre.shape == model_dict[k_target_base].shape:
                     weights_to_load[k_target_base] = v_pre
 
     model_dict.update(weights_to_load)
-    msg = model.load_state_dict(model_dict, strict=False)
-
-    print("\n--- Weight Loading Summary ---")
-    print(f"✅ Successfully matched and prepared to load {len(weights_to_load)} weight tensors.")
-    print(f"  - Missing keys (should be LoRA matrices when rank>0, empty when rank=0): {msg.missing_keys}")
-    print(f"  - Unexpected keys (should be empty): {msg.unexpected_keys}")
-    print("✅ Pretrained weights loaded.")
+    model.load_state_dict(model_dict, strict=False)
+    print(f"✅ Successfully loaded {len(weights_to_load)} pretrained weight tensors")
     return model
 
 
@@ -440,11 +398,7 @@ def set_parameter_requires_grad(model, config):
     lora_config = config['MODEL']['SWINV2'].get('LORA', {})
     lora_rank = lora_config.get('rank', 0)
 
-    if lora_rank > 0:
-        print(f"Detected LoRA rank > 0 (rank={lora_rank}).")
-
-    else:
-        print("LoRA not configured (rank = 0)")
+    if lora_rank <= 0:
         for layer_name in ['layers_x', 'layers_y']:
             for layer in getattr(model, layer_name):
                 for block in layer.blocks:
@@ -455,12 +409,7 @@ def set_parameter_requires_grad(model, config):
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-
-    print("\n--- Parameter Statistics ---")
-    print(f"Total parameters: {total_params / 1e6:.2f} M")
-    print(f"Trainable parameters: {trainable_params / 1e6:.2f} M")
-    print(f"Trainable ratio: {100 * trainable_params / total_params:.4f}%")
-    print("✅ Parameter freeze/unfreeze setup complete.")
+    print(f"Total params: {total_params / 1e6:.2f} M | Trainable params: {trainable_params / 1e6:.2f} M")
     return model
 
 
@@ -471,14 +420,14 @@ class DiceLoss(nn.Module):
         self.ignore_index = ignore_index
         self.smooth = smooth
         if not isinstance(class_weights, torch.Tensor):
-            self.class_weights = torch.tensor(class_weights, dtype=torch.float)
-        else:
-            self.class_weights = class_weights
+            class_weights = torch.tensor(class_weights, dtype=torch.float)
+        self.register_buffer('class_weights', class_weights)
 
     def forward(self, logits, targets):
-        self.class_weights = self.class_weights.to(logits.device)
+        # Force cast to FP32 for probability calculation and summation to prevent denominator overflow to inf above 65504
+        logits_fp32 = logits.float()
+        probs = F.softmax(logits_fp32, dim=1)
 
-        probs = F.softmax(logits, dim=1)
         mask = (targets != self.ignore_index)
         targets_for_onehot = targets.clone()
         targets_for_onehot[~mask] = 0
@@ -488,20 +437,18 @@ class DiceLoss(nn.Module):
         probs_masked = probs * mask_expanded
         targets_masked = targets_one_hot * mask_expanded
 
+        # Accumulation is performed in FP32 precision, supporting a dynamic range up to 3.4e38
         intersection = torch.sum(probs_masked * targets_masked, dim=(0, 2, 3))
         cardinality = torch.sum(probs_masked, dim=(0, 2, 3)) + torch.sum(targets_masked, dim=(0, 2, 3))
-
-        dice_score_per_class = (2. * intersection + self.smooth) / (cardinality + self.smooth)
+        dice_score_per_class = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
 
         weighted_dice_score = dice_score_per_class * self.class_weights
-
         sum_of_weights = torch.sum(self.class_weights)
-        if sum_of_weights > 0:
-            dice_loss = 1. - (torch.sum(weighted_dice_score) / sum_of_weights)
-        else:
-            dice_loss = torch.tensor(0.0, device=logits.device)
 
-        return dice_loss
+        if sum_of_weights > 0:
+            return 1.0 - (torch.sum(weighted_dice_score) / sum_of_weights)
+
+        return torch.tensor(0.0, device=logits.device)
 
 
 class CombinedLoss(nn.Module):
@@ -513,10 +460,7 @@ class CombinedLoss(nn.Module):
         self.dice_loss = DiceLoss(num_classes=num_classes, ignore_index=ignore_index, class_weights=class_weights_dice)
 
     def forward(self, logits, targets):
-        loss_ce = self.ce_loss(logits, targets)
-        loss_dice = self.dice_loss(logits, targets)
-
-        return self.alpha * loss_ce + self.beta * loss_dice
+        return self.alpha * self.ce_loss(logits, targets) + self.beta * self.dice_loss(logits, targets)
 
 
 def main(config):
@@ -525,11 +469,24 @@ def main(config):
         clear_checkpoints_directory(dir_path='model_weights')
         setup_logging()
 
-        print(f"--- Starting Training --- \nUsing dataset: {config['ACTIVE_DATASET']['DATASET_NAME']}")
+        print(f"--- Starting Training --- \nDataset: {config['ACTIVE_DATASET']['DATASET_NAME']}")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
         print(f"Using device: {device}")
+
+        print("\n" + "#" * 50)
+        if torch.cuda.is_available():
+            current_device_id = torch.cuda.current_device()
+            print(f"🔥 Current CUDA Device ID: {current_device_id}")
+            print(f"🔥 Device Name: {torch.cuda.get_device_name(current_device_id)}")
+            print(f"🔥 Total Physical VRAM: {torch.cuda.get_device_properties(current_device_id).total_memory / (1024**3):.2f} GB")
+        else:
+            print("⚠️ Warning: No CUDA device detected. Running on CPU!")
+        print("#" * 50 + "\n")
+
         num_workers = config['DATA']['NUM_WORKERS']
-        print(f"🚀 Enabled {num_workers} worker processes for data loading.")
+        print(f"🚀 Using {num_workers} worker processes for data loading.")
         dl_kwargs = {'batch_size': config['TRAIN']['BATCH_SIZE'], 'num_workers': num_workers, 'pin_memory': True}
         if num_workers > 0:
             dl_kwargs['persistent_workers'] = True
@@ -539,7 +496,6 @@ def main(config):
 
         train_dataset = DynamicTrainDataset(config)
         train_loader = DataLoader(train_dataset, shuffle=True, **dl_kwargs)
-        print("✅ Dataset and loaders ready.")
 
         model = DualSwinV2MonaUperNet(config)
         model = load_pretrained_weights(model, config['TRAIN']['PRETRAINED_WEIGHTS_PATH'])
@@ -547,24 +503,22 @@ def main(config):
         model.to(device)
 
         loss_config = config['TRAIN']['LOSS']
-
-        class_weights_ce = torch.tensor(config['ACTIVE_DATASET']['CLASS_WEIGHTS_CE'], dtype=torch.float).to(device)
-        class_weights_dice = loss_config['CLASS_WEIGHTS_DICE']
-
+        class_weights_ce = torch.tensor(config['ACTIVE_DATASET']['CLASS_WEIGHTS_CE'], dtype=torch.float)
         criterion = CombinedLoss(
             alpha=loss_config['alpha'],
             beta=loss_config['beta'],
             class_weights_ce=class_weights_ce,
-            class_weights_dice=class_weights_dice,
+            class_weights_dice=loss_config['CLASS_WEIGHTS_DICE'],
             num_classes=config['MODEL']['NUM_CLASSES'],
             ignore_index=config['DATA']['IGNORE_INDEX']
-        )
+        ).to(device)
 
         optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
                                       lr=config['TRAIN']['OPTIMIZER']['lr'],
                                       weight_decay=config['TRAIN']['OPTIMIZER']['weight_decay'])
         scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
         grad_clip_norm = config['TRAIN']['GRAD_CLIP_MAX_NORM']
+        grad_accum_steps = config['TRAIN']['GRAD_ACCUMULATION_STEPS']
 
         base_lr = config['TRAIN']['OPTIMIZER']['lr']
         min_lr = base_lr * config['TRAIN']['LR_SCHEDULER']['min_lr_ratio']
@@ -572,8 +526,6 @@ def main(config):
         total_epochs = config['TRAIN']['EPOCHS']
 
         best_metric, patience_counter = 0.0, 0
-        early_stopping_metric = config['TRAIN']['EARLY_STOPPING']['metric']
-
         num_eval_classes = config['ACTIVE_DATASET']['NUM_EVAL_CLASSES']
         effective_class_names = config['ACTIVE_DATASET']['CLASSES'][:num_eval_classes]
 
@@ -590,10 +542,14 @@ def main(config):
 
             model.train()
             train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1} Training")
-            running_loss = 0.0
-            optimizer.zero_grad()
+            running_loss_tensor = torch.zeros(1, device=device)
+            optimizer.zero_grad(set_to_none=True)
+
             for i, (top, dsm, gt) in enumerate(train_pbar):
-                top, dsm, gt = top.to(device), dsm.to(device), gt.to(device)
+                top = top.to(device, non_blocking=True)
+                dsm = dsm.to(device, non_blocking=True)
+                gt = gt.to(device, non_blocking=True)
+
                 with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
                     if dsm.ndim == 4 and dsm.shape[3] == 1:
                         dsm = dsm.permute(0, 3, 1, 2).contiguous()
@@ -601,23 +557,26 @@ def main(config):
                         gt = gt.squeeze(3)
                     outputs = model(top, dsm)
                     loss = criterion(outputs, gt)
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print("\n⚠️ NaN loss detected. Skipping update.")
-                    optimizer.zero_grad()
-                    continue
-                loss /= config['TRAIN']['GRAD_ACCUMULATION_STEPS']
-                scaler.scale(loss).backward()
-                if (i + 1) % config['TRAIN']['GRAD_ACCUMULATION_STEPS'] == 0:
+
+                loss_scaled = loss / grad_accum_steps
+                scaler.scale(loss_scaled).backward()
+
+                if (i + 1) % grad_accum_steps == 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
-                running_loss += loss.item() * config['TRAIN']['GRAD_ACCUMULATION_STEPS']
-                train_pbar.set_postfix(loss=f"{running_loss / (i + 1):.4f}", lr=f"{lr:.2e}")
+                    optimizer.zero_grad(set_to_none=True)
 
-            print(f"\n[Epoch {epoch + 1} End] Average Training Loss: {running_loss / len(train_loader):.4f}")
+                running_loss_tensor += loss.detach()
+                if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
+                    current_avg_loss = running_loss_tensor.item() / (i + 1)
+                    train_pbar.set_postfix(loss=f"{current_avg_loss:.4f}", lr=f"{lr:.2e}")
 
+            epoch_avg_loss = running_loss_tensor.item() / len(train_loader)
+            print(f"\n[Epoch {epoch + 1} End] Average Training Loss: {epoch_avg_loss:.4f}")
+
+            # Validation phase
             model.eval()
             metrics_calculator = MetricsCalculator(
                 num_classes=config['MODEL']['NUM_CLASSES'],
@@ -627,7 +586,9 @@ def main(config):
             val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1} Validation")
             with torch.no_grad():
                 for top, dsm, gt in val_pbar:
-                    top, dsm, gt = top.to(device), dsm.to(device), gt.to(device)
+                    top = top.to(device, non_blocking=True)
+                    dsm = dsm.to(device, non_blocking=True)
+                    gt = gt.to(device, non_blocking=True)
                     with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
                         if dsm.ndim == 4 and dsm.shape[3] == 1:
                             dsm = dsm.permute(0, 3, 1, 2).contiguous()
@@ -644,32 +605,25 @@ def main(config):
             if current_metric > best_metric:
                 best_metric = current_metric
                 patience_counter = 0
-
                 model_weights_dir = "model_weights"
                 os.makedirs(model_weights_dir, exist_ok=True)
-
                 for f in os.listdir(model_weights_dir):
                     if f.endswith('.pth'):
                         try:
                             os.remove(os.path.join(model_weights_dir, f))
-                        except OSError as e:
-                            print(f"Failed to delete old weight file {f}: {e}")
-
-                save_filename = f"mIoU_{current_metric:.4f}.pth"
-                try:
-                    torch.save(model.state_dict(), os.path.join(model_weights_dir, save_filename))
-                except Exception as e:
-                    print(f"{e}")
-
+                        except OSError:
+                            pass
+                torch.save(model.state_dict(), os.path.join(model_weights_dir, f"mIoU_{current_metric:.4f}.pth"))
             else:
                 patience_counter += 1
 
             if patience_counter >= config['TRAIN']['EARLY_STOPPING']['patience']:
+                print("Early stopping triggered. Training terminated.")
                 break
 
-        print("\n--- Training Completed ---")
+        print("\n--- Training Complete ---")
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nError occurred: {e}")
         import traceback
         traceback.print_exc()
     finally:
@@ -679,14 +633,12 @@ def main(config):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Train dual-stream semantic segmentation model using dynamic data generation.")
-    parser.add_argument('--dataset', type=str, default='potsdam', choices=['potsdam', 'vaihingen'],
-                        help='Choose dataset for training.')
+    parser = argparse.ArgumentParser(description="Train dual-stream semantic segmentation model with dynamic data generation.")
+    parser.add_argument('--dataset', type=str, default='vaihingen', choices=['potsdam', 'vaihingen'])
     args = parser.parse_args()
     config = get_config(args.dataset)
 
     import warnings
-
-    warnings.filterwarnings("ignore", "Importing from timm.models.layers is deprecated", FutureWarning)
+    warnings.filterwarnings("ignore")
 
     main(config)
