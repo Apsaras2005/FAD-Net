@@ -6,8 +6,6 @@ import torch.fft
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 import numpy as np
 import math
-import random
-
 
 class FGDWM(nn.Module):
     def __init__(self, k):
@@ -115,7 +113,7 @@ class MonaCrossAttention(nn.Module):
     def forward(self, q, kv):
         q_norm = self.norm_q(q)
         kv_norm = self.norm_kv(kv)
-        attn_output, _ = self.attn(q_norm, kv_norm, kv_norm)
+        attn_output, _ = self.attn(q_norm, kv_norm, kv_norm, need_weights=False)
         return attn_output
 
 
@@ -161,38 +159,38 @@ class MM_Mona(nn.Module):
 
         self.cached_grids = {}
         self.cached_filters = None
-        self.cached_filters_key = None  
+        self.cached_filters_key = None
 
     def _generate_log_gabor_filters(self, H, W, device):
         current_key = (H, W, str(device))
 
-        if not self.training and self.cached_filters is not None and self.cached_filters_key == current_key:
+        if self.training:
+            self.cached_filters = None
+        elif self.cached_filters is not None and self.cached_filters_key == current_key:
             return self.cached_filters
 
         if current_key not in self.cached_grids:
-            u = torch.linspace(-0.5, 0.5, W, device=device)
-            v = torch.linspace(-0.5, 0.5, H, device=device)
+            u = torch.linspace(-0.5, 0.5, W, device=device, dtype=torch.float32)
+            v = torch.linspace(-0.5, 0.5, H, device=device, dtype=torch.float32)
             v_grid, u_grid = torch.meshgrid(v, u, indexing='ij')
-            self.cached_grids[current_key] = (v_grid, u_grid)
+            radius = torch.sqrt(u_grid ** 2 + v_grid ** 2)
+            radius[H // 2, W // 2] = 1.0
+            theta = torch.atan2(v_grid, u_grid)
+            sintheta = torch.sin(theta)
+            costheta = torch.cos(theta)
+            self.cached_grids[current_key] = (radius, sintheta, costheta)
 
-        v_grid, u_grid = self.cached_grids[current_key]
-
-        radius = torch.sqrt(u_grid ** 2 + v_grid ** 2)
-        radius[H // 2, W // 2] = 1.0
+        radius, sintheta, costheta = self.cached_grids[current_key]
 
         center_freq = (torch.sigmoid(self.gabor_params[:, 0]) * 0.5).view(self.k, 1, 1)
-        freq_bw = F.softplus(self.gabor_params[:, 1]).view(self.k, 1, 1) + 1e-5  # 防止带宽为0
+        freq_bw = F.softplus(self.gabor_params[:, 1]).view(self.k, 1, 1) + 1e-5
         orientation = (torch.sigmoid(self.gabor_params[:, 2]) * torch.pi).view(self.k, 1, 1)
-        angle_bw = F.softplus(self.gabor_params[:, 3]).view(self.k, 1, 1) + 1e-5  # 防止角度带宽为0
+        angle_bw = F.softplus(self.gabor_params[:, 3]).view(self.k, 1, 1) + 1e-5
 
         r_safe = radius / (center_freq + 1e-6)
         radial_component = torch.exp((-(torch.log(r_safe + 1e-6)) ** 2) / (2 * freq_bw ** 2))
         radial_component = radial_component.clone()
         radial_component[:, H // 2, W // 2] = 0.0
-
-        theta = torch.atan2(v_grid, u_grid)
-        sintheta = torch.sin(theta)
-        costheta = torch.cos(theta)
 
         ds = sintheta * torch.cos(orientation) - costheta * torch.sin(orientation)
         dc = costheta * torch.cos(orientation) + sintheta * torch.sin(orientation)
@@ -200,23 +198,29 @@ class MM_Mona(nn.Module):
 
         angular_component = torch.exp((-dtheta ** 2) / (2 * angle_bw ** 2))
         filters = radial_component * angular_component
-        filters = filters.unsqueeze(1)
+
+        filters_unshifted = torch.fft.ifftshift(filters, dim=(-2, -1))
+        mean_filter_unshifted = filters_unshifted.mean(dim=0, keepdim=True)  # [1, H, W]
 
         if not self.training:
-            self.cached_filters = filters
+            self.cached_filters = (filters_unshifted, mean_filter_unshifted)
             self.cached_filters_key = current_key
 
-        return filters
+        return filters_unshifted, mean_filter_unshifted
 
-    def _compute_adaptive_fusion(self, x_proj_map, spec_input, gabor_filters, h, w):
+    def _compute_adaptive_fusion(self, x_proj_map, spec_input, gabor_filters_tuple, h, w):
         b, c, _, _ = x_proj_map.shape
+        filters_unshifted, mean_filter_unshifted = gabor_filters_tuple
 
-        filtered_spectra = spec_input.unsqueeze(1) * gabor_filters
-        abs_spectra = torch.abs(filtered_spectra)
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            spec_abs_mean_c = torch.abs(spec_input).mean(dim=1)
+            energy_E = torch.einsum('bhw,khw->bk', spec_abs_mean_c, filters_unshifted) / (h * w)
 
-        energy_E = abs_spectra.mean(dim=(2, 3, 4))
+            filtered_spec_mean = spec_input * mean_filter_unshifted.unsqueeze(0)
+            freq_out = torch.real(torch.fft.ifft2(filtered_spec_mean, norm='ortho'))
 
-        dynamic_weights = self.fgdwm(energy_E)
+        freq_out = freq_out.to(x_proj_map.dtype)
+        dynamic_weights = self.fgdwm(energy_E.to(x_proj_map.dtype))
 
         w_high = dynamic_weights[:, 0].view(b, 1, 1, 1)
         w_mid = dynamic_weights[:, 1].view(b, 1, 1, 1)
@@ -227,38 +231,32 @@ class MM_Mona(nn.Module):
         out_7 = self.dw_conv_7x7(x_proj_map)
         spatial_out = w_high * out_3 + w_mid * out_5 + w_low * out_7
 
-        B_f, K_f, C_f, H_f, W_f = filtered_spectra.shape
-        reshaped_spectra = filtered_spectra.view(B_f * K_f, C_f, H_f, W_f)
-
-        texture_map_complex = torch.fft.ifft2(torch.fft.ifftshift(reshaped_spectra, dim=(-2, -1)), norm='ortho')
-        texture_responses = torch.real(texture_map_complex).view(B_f, K_f, C_f, H_f, W_f)
-
-        freq_out = torch.mean(texture_responses, dim=1)
-
         return spatial_out, freq_out
 
     def forward(self, x, hw_shapes, x_other=None, is_cross_path=False):
         with torch.amp.autocast(device_type='cuda', enabled=False):
-            x_fp32 = x.float()
-            x_other_fp32 = x_other.float() if x_other is not None else None
-
-            identity_final = x_fp32
-            b, n, c = x_fp32.shape
+            identity_final = x.float()
+            b, n, c = identity_final.shape
             h, w = hw_shapes
 
+            x_fp32 = identity_final
             x_norm = self.norm(x_fp32) * self.gamma + x_fp32 * self.gammax
             x_proj = self.project1(x_norm)
-            x_proj_map = x_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2)
+            x_proj_map = x_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2).contiguous()
 
-            spec_x = torch.fft.fftshift(torch.fft.fft2(x_proj_map, norm='ortho'))
-
-            if is_cross_path and x_other_fp32 is not None:
+            if is_cross_path and x_other is not None:
+                x_other_fp32 = x_other.float()
                 x_other_norm = self.norm(x_other_fp32) * self.gamma + x_other_fp32 * self.gammax
                 x_other_proj = self.project1(x_other_norm)
-                x_other_proj_map = x_other_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2)
+                x_other_proj_map = x_other_proj.reshape(b, h, w, self.proj_dim).permute(0, 3, 1, 2).contiguous()
+            else:
+                x_other_proj_map = None
 
-                spec_y = torch.fft.fftshift(torch.fft.fft2(x_other_proj_map, norm='ortho'))
+            spec_x = torch.fft.fft2(x_proj_map, norm='ortho')
+            gabor_filters_tuple = self._generate_log_gabor_filters(h, w, x.device)
 
+            if is_cross_path and x_other_proj_map is not None:
+                spec_y = torch.fft.fft2(x_other_proj_map, norm='ortho')
                 amp_x, phase_x = torch.abs(spec_x), torch.angle(spec_x)
                 amp_y, phase_y = torch.abs(spec_y), torch.angle(spec_y)
                 diff_map = torch.cat([torch.abs(amp_x - amp_y), torch.abs(phase_x - phase_y)], dim=1)
@@ -268,26 +266,25 @@ class MM_Mona(nn.Module):
                 recomb2 = torch.polar(amp_y, phase_x)
                 spec_fused = spec_x + alpha_map * recomb1 + beta_map * recomb2
             else:
+                spec_y = None
                 spec_fused = spec_x
-                x_other_proj_map = None
-
-            gabor_filters = self._generate_log_gabor_filters(h, w, x_fp32.device)
 
             spatial_out, freq_out = self._compute_adaptive_fusion(
-                x_proj_map, spec_fused, gabor_filters, h, w
+                x_proj_map, spec_fused, gabor_filters_tuple, h, w
             )
 
-            if is_cross_path and x_other_fp32 is not None:
+            if is_cross_path and x_other_proj_map is not None:
                 spatial_out_other, freq_out_other = self._compute_adaptive_fusion(
-                    x_other_proj_map, spec_y, gabor_filters, h, w
+                    x_other_proj_map, spec_y, gabor_filters_tuple, h, w
                 )
-
                 q_s = spatial_out.flatten(2).transpose(1, 2)
                 kv_s = spatial_out_other.flatten(2).transpose(1, 2)
                 q_f = freq_out.flatten(2).transpose(1, 2)
                 kv_f = freq_out_other.flatten(2).transpose(1, 2)
 
-                spatial_enhanced = spatial_out + self.cross_attn_spatial(q_s, kv_s).transpose(1, 2).view(b, self.proj_dim, h, w)
+                spatial_enhanced = spatial_out + self.cross_attn_spatial(q_s, kv_s).transpose(1, 2).view(b,
+                                                                                                         self.proj_dim,
+                                                                                                         h, w)
                 freq_enhanced = freq_out + self.cross_attn_freq(q_f, kv_f).transpose(1, 2).view(b, self.proj_dim, h, w)
             else:
                 spatial_enhanced = spatial_out
@@ -301,8 +298,7 @@ class MM_Mona(nn.Module):
             project2 = self.project2(nonlinear)
 
             final_output = identity_final + project2
-
-        return final_output
+            return final_output.to(x.dtype)
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -394,6 +390,7 @@ class WindowAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
         self.softmax = nn.Softmax(dim=-1)
+        self.max_logit_scale = math.log(1. / 0.01)
 
     def forward(self, x, mask=None):
         B_, N, C = x.shape
@@ -403,39 +400,38 @@ class WindowAttention(nn.Module):
 
         if isinstance(self.qkv, LoRALinear):
             original_qkv = F.linear(x, self.qkv.original_layer.weight, qkv_bias)
-
             lora_qkv = self.qkv.lora_B(self.qkv.lora_A(x)) * self.qkv.scaling
-
             qkv = original_qkv + lora_qkv
         else:
-
             qkv = F.linear(x, self.qkv.weight, qkv_bias)
-
 
         qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
-        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01, device=x.device))).exp()
-        attn = attn * logit_scale
+        logit_scale = torch.clamp(self.logit_scale, max=self.max_logit_scale).exp()
+        q = F.normalize(q, dim=-1) * logit_scale.unsqueeze(0)
+        k = F.normalize(k, dim=-1)
 
         relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads)
         relative_position_bias = relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
         relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
-        attn = attn + relative_position_bias.unsqueeze(0)
 
         if mask is not None:
             nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
+            attn_bias = relative_position_bias.unsqueeze(0).unsqueeze(0) + mask.unsqueeze(1).unsqueeze(0)
+            attn_bias = attn_bias.expand(B_ // nW, -1, -1, -1, -1).reshape(B_, self.num_heads, N, N)
         else:
-            attn = self.softmax(attn)
+            attn_bias = relative_position_bias.unsqueeze(0)
 
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_bias.to(q.dtype),
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            scale=1.0
+        )
+        x = x.transpose(1, 2).reshape(B_, N, C)
 
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -740,7 +736,7 @@ class SwinTransformerV2(nn.Module):
                                downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
                                use_checkpoint=use_checkpoint,
                                pretrained_window_size=pretrained_window_sizes[i_layer],
-                               lora_config=lora_config)  # 传递 lora_config
+                               lora_config=lora_config)
             self.layers.append(layer)
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
