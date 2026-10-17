@@ -62,10 +62,11 @@ FAD-Net/
 
 ## 💾 Datasets: ISPRS Vaihingen and Potsdam
 
-1. **Download Data:**
-   Download raw files following the [MMSegmentation Dataset Preparation Guide](https://github.com/open-mmlab/mmsegmentation/blob/main/docs/en/user_guides/2_dataset_prepare.md#prepare-datasets).
+**Download Data:**
+Please refer to the **MMSegmentation Dataset Preparation Guide** to download the raw data:
+👉 **[Download ISPRS Datasets Here](https://github.com/open-mmlab/mmsegmentation/blob/main/docs/en/user_guides/2_dataset_prepare.md#prepare-datasets)**
 
-2. **Organize Directory:**
+**Organize Directory:**
    Ensure all files are in `.tif` format and placed under `datasets/Vaihingen/` or `datasets/Potsdam/` according to `FILE_TEMPLATES` in `config/configs_vaihingen.py` or `config/configs_potsdam.py`:
    - `top/`: True Orthophoto (`.tif`)
    - `dsm/`: Normalized Digital Surface Models (`.tif`)
