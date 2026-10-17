@@ -41,7 +41,7 @@ pip install -r requirements.txt
 
 ```text
 FAD-Net/
-├── config.py
+├── config/
 ├── train.py
 ├── model/
 ├── datasets/
