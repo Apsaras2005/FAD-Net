@@ -8,8 +8,13 @@ from timm.layers import DropPath
 
 _logger = logging.getLogger(__name__)
 
+_REF_POINTS_CACHE = {}
 
 def get_reference_points(spatial_shapes, device):
+    cache_key = (tuple(spatial_shapes), str(device))
+    if cache_key in _REF_POINTS_CACHE:
+        return _REF_POINTS_CACHE[cache_key]
+
     reference_points_list = []
     for lvl, (H_, W_) in enumerate(spatial_shapes):
         ref_y, ref_x = torch.meshgrid(
@@ -23,6 +28,7 @@ def get_reference_points(spatial_shapes, device):
         reference_points_list.append(ref)
     reference_points = torch.cat(reference_points_list, 1)
     reference_points = reference_points[:, :, None]
+    _REF_POINTS_CACHE[cache_key] = reference_points
     return reference_points
 
 
@@ -127,12 +133,17 @@ class DualExtractor(nn.Module):
             self.ffn = ConvFFN(in_features=dim, hidden_features=int(dim * cffn_ratio), drop=drop)
             self.ffn_norm = norm_layer(dim)
             self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self._shape_cache = {}
 
     def forward(self, c, x_vit, y_vit, H_q, W_q, H_kv, W_kv):
         def _inner_forward(c, x_vit, y_vit, H_q, W_q, H_kv, W_kv):
-            # 1. K/V (ViT) feature spatial shapes
-            spatial_shapes = torch.as_tensor([(H_kv, W_kv)], dtype=torch.long, device=c.device)
-            level_start_index = torch.as_tensor([0], dtype=torch.long, device=c.device)
+            shape_key = (H_kv, W_kv, str(c.device))
+            if shape_key not in self._shape_cache:
+                self._shape_cache[shape_key] = (
+                    torch.as_tensor([(H_kv, W_kv)], dtype=torch.long, device=c.device),
+                    torch.as_tensor([0], dtype=torch.long, device=c.device)
+                )
+            spatial_shapes, level_start_index = self._shape_cache[shape_key]
 
             query_spatial_shapes = [(H_q, W_q)]
             reference_points = get_reference_points(query_spatial_shapes, c.device)
@@ -239,24 +250,24 @@ class SpatialPriorModule(nn.Module):
         self.with_cp = with_cp
         self.stem = nn.Sequential(*[
             nn.Conv2d(3, inplanes, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.SyncBatchNorm(inplanes), nn.ReLU(inplace=True),
+            nn.BatchNorm2d(inplanes), nn.ReLU(inplace=True),
             nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.SyncBatchNorm(inplanes), nn.ReLU(inplace=True),
+            nn.BatchNorm2d(inplanes), nn.ReLU(inplace=True),
             nn.Conv2d(inplanes, inplanes, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.SyncBatchNorm(inplanes), nn.ReLU(inplace=True),
+            nn.BatchNorm2d(inplanes), nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         ])
         self.conv2 = nn.Sequential(*[
             nn.Conv2d(inplanes, 2 * inplanes, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.SyncBatchNorm(2 * inplanes), nn.ReLU(inplace=True)
+            nn.BatchNorm2d(2 * inplanes), nn.ReLU(inplace=True)
         ])
         self.conv3 = nn.Sequential(*[
             nn.Conv2d(2 * inplanes, 4 * inplanes, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.SyncBatchNorm(4 * inplanes), nn.ReLU(inplace=True)
+            nn.BatchNorm2d(4 * inplanes), nn.ReLU(inplace=True)
         ])
         self.conv4 = nn.Sequential(*[
             nn.Conv2d(4 * inplanes, 8 * inplanes, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.SyncBatchNorm(8 * inplanes), nn.ReLU(inplace=True)
+            nn.BatchNorm2d(8 * inplanes), nn.ReLU(inplace=True)
         ])
         self.fc2 = nn.Conv2d(2 * inplanes, embed_dim, kernel_size=1, stride=1, padding=0, bias=True)
         self.fc3 = nn.Conv2d(4 * inplanes, embed_dim, kernel_size=1, stride=1, padding=0, bias=True)
