@@ -60,18 +60,16 @@ FAD-Net/
 
 ---
 
-## 💾 Supported Datasets: ISPRS Vaihingen and Potsdam.
+## 💾 Datasets: ISPRS Vaihingen and Potsdam
 
 1. **Download Data:**
-Please refer to the **MMSegmentation Dataset Preparation Guide** to download the raw data:
-👉 **[Download ISPRS Datasets Here](https://github.com/open-mmlab/mmsegmentation/blob/main/docs/en/user_guides/2_dataset_prepare.md#prepare-datasets)**
-2. **Organize Data:**
-After downloading, you must extract and rename/move the files to match the `FILE_TEMPLATES` in `config.py`.
-* **Vaihingen:** Ensure images are named like `top_mosaic_09cm_area1.tif`.
-* **Potsdam:** Ensure images are named like `top_potsdam_2_10_RGB.tif`.
+   Download raw files following the [MMSegmentation Dataset Preparation Guide](https://github.com/open-mmlab/mmsegmentation/blob/main/docs/en/user_guides/2_dataset_prepare.md#prepare-datasets).
 
-
-*Note: The script expects specific subfolders (`top`, `dsm`, `ground_truth`). Please ensure your extracted files are moved into these folders inside `datasets/Vaihingen` or `datasets/Potsdam`.*
+2. **Organize Directory:**
+   Ensure all files are in `.tif` format and placed under `datasets/Vaihingen/` or `datasets/Potsdam/` according to `FILE_TEMPLATES` in `config/configs_vaihingen.py` or `config/configs_potsdam.py`:
+   - `top/`: True Orthophoto (`.tif`)
+   - `dsm/`: Normalized Digital Surface Models (`.tif`)
+   - `ground_truth/`: Semantic labels (`.tif`)
 
 ---
 
