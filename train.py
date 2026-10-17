@@ -28,8 +28,8 @@ import torch.nn.functional as F
 # Disable OpenCV internal multithreading to avoid conflicts with DataLoader multiprocessing
 cv2.setNumThreads(0)
 
-from config.configs_vaihingen import get_config
-from FAD_Net_2_Flash import DualSwinV2MonaUperNet
+from config.configs_potsdam import get_config
+from model import DualSwinV2MonaUperNet
 
 
 class Tee:
@@ -634,7 +634,7 @@ def main(config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train dual-stream semantic segmentation model with dynamic data generation.")
-    parser.add_argument('--dataset', type=str, default='vaihingen', choices=['potsdam', 'vaihingen'])
+    parser.add_argument('--dataset', type=str, default='potsdam', choices=['potsdam', 'vaihingen'])
     args = parser.parse_args()
     config = get_config(args.dataset)
 
