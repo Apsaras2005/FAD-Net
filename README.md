@@ -76,9 +76,11 @@ Please refer to the **MMSegmentation Dataset Preparation Guide** to download the
 
 ## 🏋️ Pretrained Weights & Configuration
 
-👉 **[Download Swin-V2 Weights (Microsoft GitHub)](https://github.com/microsoft/Swin-Transformer)**
+👉 **[Download Swin-V2 Weights (Microsoft Official)](https://github.com/microsoft/Swin-Transformer)**
 
-Download the Swin Transformer V2 weights and place them in the `pretrained_weights/` folder. Update `config.py` according to your selected backbone:
+Download the official Swin Transformer V2 checkpoints and place them in the `pretrained_weights/` directory.
+
+Before training, update the corresponding fields in `config/configs_vaihingen.py` (or `config/configs_potsdam.py`) depending on the selected backbone:
 
 ### Swin-V2 Base
 
@@ -86,28 +88,33 @@ Download the Swin Transformer V2 weights and place them in the `pretrained_weigh
 'PRETRAINED_WEIGHTS_PATH': 'pretrained_weights/swinv2_base_patch4_window12_192_22k.pth',
 
 'SWINV2': {
-    'EMBED_DIM': 128,              
-    'DEPTHS': [2, 2, 18, 2],       
-    'NUM_HEADS': [4, 8, 16, 32],   
-    'WINDOW_SIZE': 16,             
-    'PRETRAINED_WINDOW_SIZES': [12, 12, 12, 6], 
+    'EMBED_DIM': 128,
+    'DEPTHS': [2, 2, 18, 2],
+    'NUM_HEADS': [4, 8, 16, 32],
+    'WINDOW_SIZE': 16,
+    'PRETRAINED_WINDOW_SIZES': [12, 12, 12, 6],
+},
+'ADAPTER': {
+    'DEFORM_NUM_HEADS': 8,
+    # Keep other adapter parameters unchanged
 }
-
 ```
 
 ### Swin-V2 Small
-
-```python
+```Python
 'PRETRAINED_WEIGHTS_PATH': 'pretrained_weights/swinv2_small_patch4_window16_256.pth',
 
 'SWINV2': {
-    'EMBED_DIM': 96,             
-    'DEPTHS': [2, 2, 18, 2],     
-    'NUM_HEADS': [3, 6, 12, 24],   
+    'EMBED_DIM': 96,
+    'DEPTHS': [2, 2, 18, 2],
+    'NUM_HEADS': [3, 6, 12, 24],
     'WINDOW_SIZE': 16,
-    'PRETRAINED_WINDOW_SIZES': [16, 16, 16, 8], 
+    'PRETRAINED_WINDOW_SIZES': [0, 0, 0, 0],
+},
+'ADAPTER': {
+    'DEFORM_NUM_HEADS': 6,  # 96 / 6 = 16 (power of 2) to ensure optimal deformable attention performance
+    # Keep other adapter parameters unchanged
 }
-
 ```
 
 ---
